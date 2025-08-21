@@ -1,0 +1,371 @@
+############### Proxy Method for calculating the number of non condensate by  #############
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.fftpack import fft, ifft, fftfreq
+
+# Parameters
+Nx = 1024
+Lx = 10.0
+dx = Lx / Nx
+x = np.linspace(-Lx/2, Lx/2, Nx, endpoint=False)
+dt = 0.001
+Nt = 2000
+
+g = 1.0
+V0 = 5.0
+kL = 2 * np.pi
+k = fftfreq(Nx, d=dx) * 2 * np.pi
+k2 = k**2
+
+# Initial wavefunction (complex)
+psi = np.exp(-x**2).astype(np.complex128)
+psi /= np.sqrt(np.sum(np.abs(psi)**2) * dx)
+
+# Potential function
+def ratchet_potential(x, t, V0, kL):
+    phase = np.pi / 2
+    asymmetry = 0.3
+    return V0 * (np.sin(kL * x) + asymmetry * np.sin(2 * kL * x + phase)) * np.sin(2 * np.pi * t)
+
+# Diagnostics storage
+energy_list = []
+current_list = []
+noncondensate_list = []
+times = []
+
+# Time evolution
+for t_step in range(Nt):
+    t = t_step * dt
+
+    # Half-step nonlinear + potential
+    V = ratchet_potential(x, t, V0, kL)
+    psi *= np.exp(-1j * (g * np.abs(psi)**2 + V) * dt / 2)
+    # Convert to momentum space
+    psi_k = fft(psi)
+    # Full-step kinetic
+    psi_k *= np.exp(-1j * k2 * dt / 2)
+    psi = ifft(psi_k)
+    # Half-step nonlinear + potential
+    V = ratchet_potential(x, t + dt, V0, kL)
+    psi *= np.exp(-1j * (g * np.abs( psi)**2 + V) * dt / 2)
+
+    # Diagnostics every 100 steps
+    if t_step % 100 == 0:
+        # Current Density
+        dpsi_dx = ifft(1j * k * fft(psi))
+        density = np.abs(psi)**2
+        current_density = np.imag(np.conj(psi) * dpsi_dx)
+        current = np.sum(current_density) * dx
+
+        kinetic = 0.5 * np.abs(dpsi_dx)**2
+        interaction = 0.5 * g * density**2
+        potential_energy = V * density
+        total_energy = np.sum(kinetic + potential_energy + interaction) * dx
+
+        # Non-condensate proxy: variance in high-frequency density
+        density_k = np.abs(fft(density))**2
+        high_freq_power = np.sum(density_k[Nx//4:Nx//2])
+        noncondensate_fraction = high_freq_power / np.sum(density_k)
+
+        # Store
+        energy_list.append(total_energy)
+        current_list.append(current)
+        noncondensate_list.append(noncondensate_fraction)
+        times.append(t)
+
+# Plotting
+plt.figure(figsize=(12, 8))
+
+plt.subplot(3, 1, 1)
+plt.plot(times, energy_list)
+plt.ylabel("Energy")
+plt.title("BEC Observables in Ratchet Potential")
+
+plt.subplot(3, 1, 2)
+plt.plot(times, current_list)
+plt.ylabel("Current")
+
+plt.subplot(3, 1, 3)
+plt.plot(times, noncondensate_list)
+plt.ylabel("Non-condensate Estimate")
+plt.xlabel("Time")
+
+plt.tight_layout()
+plt.show()
+
+
+####################### Corrected Time-Dependent Penrose-Onsager Method ###########################
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.fftpack import fft, ifft, fftfreq
+from matplotlib.ticker import MultipleLocator
+import matplotlib.cm as cm
+
+# Parameters
+Nx = 1024
+Lx = 10.0
+dx = Lx / Nx
+x = np.linspace(-Lx / 2, Lx / 2, Nx, endpoint=False)
+dt = 0.001
+Nt = 2000
+diagnostic_interval = 100  # Store data every 100 steps
+snapshot_interval = 200    # For density plots
+
+g = 1.0
+V0 = 10.0
+kL = 2 * np.pi
+k = fftfreq(Nx, d=dx) * 2 * np.pi
+k2 = k**2
+
+# Potential function
+def ratchet_potential(x, t, V0, kL):
+    phase = np.pi / 2
+    asymmetry = 0.3
+    return V0 * (np.sin(kL * x) + asymmetry * np.sin(2 * kL * x + phase)) * np.sin(2 * np.pi * t)
+
+# Initialize wavefunction
+psi = np.exp(-x**2).astype(np.complex128)
+psi /= np.sqrt(np.sum(np.abs(psi)**2) * dx)
+
+# Initialize storage
+num_diagnostics = Nt // diagnostic_interval
+energy_list = np.zeros(num_diagnostics)
+current_list = np.zeros(num_diagnostics)
+noncondensate_list = np.zeros(num_diagnostics)
+kinetic_list = np.zeros(num_diagnostics)
+interaction_list = np.zeros(num_diagnostics)
+potential_list = np.zeros(num_diagnostics)
+times = np.zeros(num_diagnostics)
+psi_history = []  # Store wavefunctions for density matrix
+density_snapshots = []  # For density plots
+snapshot_times = []  # Times for density plots
+
+# Time evolution
+diag_idx = 0  # Index for diagnostic storage
+for t_step in range(Nt):
+    t = t_step * dt
+    
+    # Time evolution steps
+    V = ratchet_potential(x, t, V0, kL)
+    psi *= np.exp(-1j * (g * np.abs(psi)**2 + V) * dt / 2)
+    psi_k = fft(psi)
+    psi_k *= np.exp(-1j * k2 * dt / 2)
+    psi = ifft(psi_k)
+    V = ratchet_potential(x, t + dt, V0, kL)
+    psi *= np.exp(-1j * (g * np.abs(psi)**2 + V) * dt / 2)
+    
+    # Store density snapshots
+    if t_step % snapshot_interval == 0:
+        density_snapshots.append(np.abs(psi)**2)
+        snapshot_times.append(t)
+    
+    # Store diagnostics
+    if t_step % diagnostic_interval == 0:
+        dpsi_dx = ifft(1j * k * fft(psi))
+        # Energy calculation
+        kinetic = 0.5 * np.abs(dpsi_dx)**2
+        interaction = 0.5 * g * np.abs(psi)**4
+        potential = V * np.abs(psi)**2
+        # Calculate total kinetic,potential and interaction energy for each simulation step
+        kinetic_energy = np.sum(kinetic) * dx
+        interaction_energy = np.sum(interaction) * dx
+        potential_energy = np.sum(potential) * dx
+        #store each energy term
+        kinetic_list[diag_idx] = kinetic_energy
+        interaction_list[diag_idx] = interaction_energy
+        potential_list[diag_idx] = potential_energy
+        #Calculate the total energy of the system
+        energy_list[diag_idx] = kinetic_energy + interaction_energy + potential_energy 
+        #Print energy at diffrent time to compare the contribution of diffrent energy term
+        if t_step % 20 == 0:
+            print(f"t={t:.3f} kinetic={kinetic_energy:.3f} interaction={interaction_energy:.3f} potential={potential_energy:.3f}")
+        # Current calculation
+        current_list[diag_idx] = np.sum(np.imag(np.conj(psi) * dpsi_dx)) * dx
+        # Store wavefunction for density matrix
+        psi_history.append(psi.copy())
+        times[diag_idx] = t
+        diag_idx += 1
+
+# Compute density matrix and non-condensate fraction
+if len(psi_history) > 0:
+    # Build density matrix
+    rho = np.zeros((Nx, Nx), dtype=np.complex128)
+    for psi_t in psi_history:
+        rho += np.outer(psi_t.conj(), psi_t) * dx
+    rho /= len(psi_history)  # Normalize
+    
+    # Diagonalize to get condensate mode
+    eigenvalues, eigenmodes = np.linalg.eigh(rho)
+    condensate_mode = eigenmodes[:, -1]  # Dominant mode
+    
+    # Compute non-condensate fraction at each diagnostic step
+    for idx, psi_t in enumerate(psi_history):
+        overlap = np.abs(np.sum(condensate_mode.conj() * psi_t) * dx)**2
+        norm = np.sum(np.abs(psi_t)**2) * dx
+        noncondensate_list[idx] = 1 - overlap / norm
+
+
+# Find indices for free-like and localized states based on energy
+free_idx = np.argmax(energy_list)  # Highest energy (free-like)
+localized_idx = np.argmin(energy_list)  # Lowest energy (localized)
+
+# Get corresponding densities
+density_free = np.abs(psi_history[free_idx])**2
+density_localized = np.abs(psi_history[localized_idx])**2
+
+# Compute cumulative average current
+avg_current = np.cumsum(current_list) / np.arange(1, len(current_list) + 1)
+
+# Calculate the Condensate vs  Non Condensate List
+condensate_list = 1 - noncondensate_list
+
+#### Plot Modifications ##############
+#fs = 15
+
+
+#plt.rcParams.update({'figure.autolayout': True})
+
+#plt.rc('font', size=fs)          # controls default text sizes
+#plt.rc('axes', titlesize=fs)     # fontsize of the axes title
+#plt.rc('axes', labelsize=fs)    # fontsize of the x and y labels
+#plt.rc('axes', linewidth=2.5)
+
+#plt.rc('xtick', labelsize=fs)    # fontsize of the tick labels
+#plt.rc('ytick', labelsize=fs)    # fontsize of the tick labels
+#plt.rc('legend', fontsize=fs)    # legend fontsize
+#plt.rc('figure', titlesize=fs)
+#plt.rcParams['grid.linewidth'] = 8.5
+
+#from matplotlib.pyplot import figure
+#figure(num=None, figsize=(6, 4), dpi=150, facecolor='w', edgecolor='k')
+#plt.plot(energy_list, noncondensate_list, '-<r',linewidth=2, markersize=4, label='$C_v$')
+#plt.xlabel('Total Energy')
+#plt.ylabel('Non-Condensate Fraction')
+#plt.title('Energy vs Non-Condensate Fraction')
+#plt.grid(True)
+#plt.legend()
+#plt.show()
+
+
+# Plotting
+plt.figure(figsize=(30, 30))
+
+# Plot density evolution
+plt.subplot(18, 1, 1)
+for i, density in enumerate(density_snapshots):
+    plt.plot(x, density, label=f't={snapshot_times[i]:.2f}')
+plt.title('BEC Density Evolution')
+plt.ylabel(r'$|\psi|^2$')
+plt.legend()
+plt.grid(True)
+
+# plot the contribution of each energy term to the system
+plt.subplot(18, 1, 2)
+plt.plot(times, kinetic_list, label='Kinetic')
+plt.plot(times, interaction_list, label='Interaction')
+plt.plot(times, potential_list, label='Potential')
+plt.plot(times, energy_list, label='Total', linestyle='--', color='black')
+plt.title('Energy Contributions Over Time')
+plt.xlabel('Time')
+plt.ylabel('Energy')
+plt.legend()
+plt.grid(True)
+
+# Plot the energy profile for the higest and lowest energy states depicting the free and bound state
+plt.subplot(18, 1, 3)
+plt.plot(x, density_free, label=f'Free-like state (t={times[free_idx]:.2f})', color='blue')
+plt.plot(x, density_localized, label=f'Localized state (t={times[localized_idx]:.2f})', color='red')
+plt.title('Density Profiles: Free-like vs Localized State')
+plt.xlabel('x')
+plt.ylabel(r'$|\psi(x)|^2$')
+plt.legend()
+plt.grid(True)
+
+# Plot energy
+plt.subplot(18, 1, 4)
+plt.plot(times, energy_list)
+plt.ylabel('Energy')
+plt.grid(True)
+
+# Plot current
+plt.subplot(18, 1, 5)
+plt.plot(times, current_list)
+plt.ylabel('Current')
+plt.grid(True)
+
+# Plot of the average current to show the general trend of movement of particles
+plt.subplot(18, 1, 6)
+plt.plot(times, avg_current, label='Average Current')
+plt.axhline(0, color='k', linestyle='--', linewidth=0.8)
+plt.title('Cumulative Average Current Over Time')
+plt.xlabel('Time')
+plt.ylabel('Average Current')
+plt.grid(True)
+plt.legend()
+
+# Plot non-condensate fraction
+plt.subplot(18, 1, 7)
+plt.plot(times, noncondensate_list)
+plt.ylabel('Non-condensate Fraction')
+plt.xlabel('Time')
+plt.grid(True)
+
+# Plot Condensate Fraction
+plt.subplot(18, 1, 8)
+plt.plot(times, condensate_list)
+plt.ylabel('Condensate Fraction')
+plt.xlabel('Time')
+plt.grid(True)
+
+# Plot Condensate Fraction Vs Non Condensate Fraction
+plt.subplot(18, 1, 9)
+plt.plot(times, noncondensate_list, label='Non-Condensate Fraction', color='blue')
+plt.plot(times, condensate_list, label='Condensate Fraction', color='red')
+plt.axhline(0, color='black', linewidth=0.8, linestyle='--')
+plt.xlabel('Time')
+plt.ylabel('Fraction')
+plt.title('Condensate vs Non-Condensate Fraction')
+plt.legend()
+plt.grid(True)
+#plt.ylim(0.99, 1.0)  # Adjust range to zoom in
+
+#Plot of energy vs noncondensate particle to check what the cause of non condensation is
+plt.subplot(18, 1, 10)
+plt.plot(energy_list, noncondensate_list, 'o-', color='purple')
+plt.xlabel('Total Energy')
+plt.ylabel('Non-Condensate Fraction')
+plt.title('Energy vs Non-Condensate Fraction')
+plt.grid(True)
+
+#Energy vs NonCondensate Fraction with an optional color map showing time progression
+plt.subplot(18, 1, 11)
+colors = cm.viridis(np.linspace(0, 1, len(times)))
+scatter = plt.scatter(energy_list, noncondensate_list, c=times, cmap='viridis', edgecolor='k')
+plt.xlabel('Total Energy')
+plt.ylabel('Non-Condensate Fraction')
+plt.title('Energy vs Non-Condensate Fraction')
+plt.colorbar(scatter, label='Time')
+plt.grid(True)
+
+#Energy Contributions vs non Condensate
+plt.subplot(18, 1, 12)
+plt.plot(noncondensate_list, kinetic_list, label="Kinetic Energy", color='blue')
+plt.plot(noncondensate_list, interaction_list, label="Interaction Energy", color='orange')
+plt.plot(noncondensate_list, potential_list, label="Potential Energy", color='green')
+plt.xlabel("Non-condensate Fraction")
+plt.ylabel("Energy")
+plt.title("Energy Contributions vs Non-condensate Fraction")
+plt.legend()
+plt.grid(True)
+
+
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
